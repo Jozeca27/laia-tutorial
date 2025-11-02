@@ -1,4 +1,5 @@
 name: 4 - Continuous Deployment
+run-name: "${{ github.workflow }}"
 
 permissions: write-all
 
@@ -20,7 +21,7 @@ jobs:
   deploy-prod:
     # Run only if previous stage finished successfully
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4

@@ -15,16 +15,16 @@ MODEL_NAME = os.getenv('MLFLOW_MODEL_NAME')
 if not MODEL_NAME:
     raise EnvironmentError("Missing required env var: MLFLOW_MODEL_NAME")
 
-MODEL_STAGE = os.getenv("MODEL_STAGE")
-# MODEL_STAGE = "production"
-# if not MODEL_STAGE:
-# raise RuntimeError("❌ Environment variable MODEL_STAGE is required but not set.")
+MODEL_ALIAS = os.getenv("MODEL_ALIAS")
+# MODEL_ALIAS = "production"
+# if not MODEL_ALIAS:
+# raise RuntimeError("❌ Environment variable MODEL_ALIAS is required but not set.")
 
 
 # Try to load model once on startup
 try:
     app.config["MODEL"] = mlflow.pyfunc.load_model(
-        model_uri=f"models:/{MODEL_NAME}@{MODEL_STAGE}"
+        model_uri=f"models:/{MODEL_NAME}@{MODEL_ALIAS}"
     )
     print("Model loaded successfully at startup.")
 except Exception as e:
@@ -69,7 +69,7 @@ def predict():
 def reload_model():
     """Reload model from MLflow and store in Flask app config."""
     try:
-        model = mlflow.pyfunc.load_model(model_uri=f"models:/{MODEL_NAME}@{MODEL_STAGE}")
+        model = mlflow.pyfunc.load_model(model_uri=f"models:/{MODEL_NAME}@{MODEL_ALIAS}")
         app.config["MODEL"] = model
         return jsonify(message="Model reloaded successfully.")
     except Exception as e:

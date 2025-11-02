@@ -1,4 +1,5 @@
 name: 2 - Continuous Delivery
+run-name: "${{ github.workflow }}"
 
 permissions: write-all
 
@@ -65,13 +66,13 @@ jobs:
       - run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
 
       # Start serving image
-      # It is configured to load the model passed in env variable MLFLOW_MODEL_NAME and alias MODEL_STAGE
-      - name: Start serving image
+      # It is configured to load the model passed in env variable MLFLOW_MODEL_NAME and alias MODEL_ALIAS
+      - name: Start serving container
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
           MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
-          MODEL_STAGE: ${{ github.sha }}
+          MODEL_ALIAS: ${{ github.sha }}
           MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
         run: |
           docker run -d \
@@ -80,7 +81,7 @@ jobs:
             -e MLFLOW_TRACKING_URI \
             -e MLFLOW_TRACKING_USERNAME \
             -e MLFLOW_TRACKING_PASSWORD \
-            -e MODEL_STAGE \
+            -e MODEL_ALIAS \
             -e MLFLOW_MODEL_NAME \
             ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
           
@@ -88,6 +89,7 @@ jobs:
           sleep 10
 
       # Run end to end tests, this will test the serving app to see if it is working ok
+      # Additional metrics and verification can assess performance metrics as well
       - name: Run Staging tests
         run: uv run pytest tests/test_e2e.py -v
 

@@ -1,4 +1,5 @@
 name: 1 - Continuous Integration
+run-name: "${{ github.workflow }}"
 
 permissions: write-all
 

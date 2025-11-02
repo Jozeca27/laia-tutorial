@@ -1,4 +1,5 @@
 name: 3 - Continuous Staging
+run-name: "${{ github.workflow }}"
 
 permissions: write-all
 
@@ -38,10 +39,26 @@ jobs:
 
       - run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
 
-      - name: Run staging container
+      - name: Start serving container
+        env:
+          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
+          MODEL_ALIAS: ${{ github.sha }}
+          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
+
         run: |
-          docker run -d --name serving-app -p 8080:8080 \
-          ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+          docker run -d \
+            --name serving-app \
+            -p 8080:8080 \
+            -e MLFLOW_TRACKING_URI \
+            -e MLFLOW_TRACKING_USERNAME \
+            -e MLFLOW_TRACKING_PASSWORD \
+            -e MODEL_ALIAS \
+            -e MLFLOW_MODEL_NAME \
+            ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+          
+          # Wait for Flask to be ready
           sleep 10
 
       # Here we are just running the same E2E tests, but in real systems we would run
