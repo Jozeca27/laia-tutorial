@@ -99,7 +99,7 @@ jobs:
           MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
         run: |
           # Train model and log to remote MLflow server
-          uv run python tests/train_ci.py
+          uv run python training/train_ci.py
       
       - name: Save training metadata
         run: |
