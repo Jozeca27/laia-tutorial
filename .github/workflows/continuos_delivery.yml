@@ -24,8 +24,12 @@ jobs:
         with: { python-version: '3.13' }
       - run: pip install uv
 
-      - uses: actions/download-artifact@v4
-        with: { name: training-image, path: /tmp }
+      - name: Download training image artifact from CI workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: training-image
+          path: /tmp
+          run-id: ${{ github.event.workflow_run.id }}
       - run: docker load --input /tmp/training.tar
 
       - name: Run training
@@ -46,8 +50,13 @@ jobs:
             -e COMMIT_SHA \
             training:${{ github.sha }}
 
-      - uses: actions/download-artifact@v4
-        with: { name: serving-image, path: /tmp }
+
+      - name: Download serving image artifact from CI workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: serving-image
+          path: /tmp
+          run-id: ${{ github.event.workflow_run.id }}
       - run: docker load --input /tmp/serving.tar
 
       - name: Start delivery E2E serving app
