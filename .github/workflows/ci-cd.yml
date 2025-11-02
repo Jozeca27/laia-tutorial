@@ -9,11 +9,11 @@ on:
 env:
   REGISTRY: ghcr.io
   FLASK_IMAGE_NAME: ${{ github.repository }}/flask-app
-  # Remote MLflow server configuration
   MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
 
 jobs:
   test-unit:
+    # Continuous Integration - run light tests
     name: Unit Tests
     runs-on: ubuntu-latest
     
@@ -39,6 +39,7 @@ jobs:
         run: uv run pytest tests/test_train.py -v
 
   build-images:
+    # Continuous Integration - tests passed, build training and serving images
     name: Build Docker Image
     runs-on: ubuntu-latest
     needs: test-unit
@@ -70,6 +71,8 @@ jobs:
           retention-days: 1
 
   train-model:
+    # Continuous Delivery - passed build, run ml pipeline
+
     name: Train Model
     runs-on: ubuntu-latest
     needs: build-images
@@ -111,6 +114,7 @@ jobs:
           retention-days: 7
 
   test-e2e:
+    # Continuous Staging - best model selected test E2E
     name: End-to-End Tests
     runs-on: ubuntu-latest
     needs: train-model
@@ -177,14 +181,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Fetch previously built inference image
       - name: Download CI built image
         uses: actions/download-artifact@v4
         with:
-          name: flask-ci-image
+          name: flask-app-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load -i /tmp/flask-ci.tar
+        run: docker load -i /tmp/flask-app.tar
 
       - name: Extract metadata (same rules as build)
         id: meta
