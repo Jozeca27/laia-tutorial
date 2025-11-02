@@ -95,7 +95,7 @@ def test_reload_model_success(client):
         mock_model = Mock()
         mock_load.return_value = mock_model
         
-        response = client.post('/reload')
+        response = client.get('/reload')
         assert response.status_code == 200
         data = json.loads(response.data)
         assert 'message' in data
@@ -107,7 +107,7 @@ def test_reload_model_failure(client):
     with patch('mlflow.pyfunc.load_model') as mock_load:
         mock_load.side_effect = Exception("MLflow error")
         
-        response = client.post('/reload')
+        response = client.get('/reload')
         assert response.status_code == 500
         data = json.loads(response.data)
         assert 'error' in data
