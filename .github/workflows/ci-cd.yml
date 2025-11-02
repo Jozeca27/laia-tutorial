@@ -125,6 +125,7 @@ jobs:
             -e MLFLOW_TRACKING_URI \
             -e MLFLOW_TRACKING_USERNAME \
             -e MLFLOW_TRACKING_PASSWORD \
+            -e MLFLOW_MODEL_NAME \
             training:${{ github.sha }}
 
       - name: Extract metadata (same rules as build)
@@ -162,11 +163,17 @@ jobs:
             docker push "$TAG"
           done
 
+      - name: Push training image
+        if: success()
+        run: |
+          docker tag training:${{ github.sha }} ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+
       - name: Save training metadata
         run: |
           echo "Training completed at $(date)" > training_metadata.txt
           echo "MLflow URI: ${{ env.MLFLOW_TRACKING_URI }}" >> training_metadata.txt
-      
+
       - name: Upload training metadata
         uses: actions/upload-artifact@v4
         with:
@@ -220,6 +227,7 @@ jobs:
             -e MLFLOW_TRACKING_USERNAME \
             -e MLFLOW_TRACKING_PASSWORD \
             -e MODEL_STAGE \
+            -e MLFLOW_MODEL_NAME \
             ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:staging
           
           # Wait for Flask to be ready
@@ -303,4 +311,5 @@ jobs:
             -e MLFLOW_TRACKING_USERNAME \
             -e MLFLOW_TRACKING_PASSWORD \
             -e MODEL_STAGE \
+            -e MLFLOW_MODEL_NAME \
             ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}:production
