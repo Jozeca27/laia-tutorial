@@ -1,432 +1,895 @@
 # CI/CD Pipeline for ML Systems - Tutorial
 
-This tutorial explains each step of a CI/CD pipeline that automatically tests, builds, trains, and deploys machine learning models to production.
+This tutorial explains a complete CI/CD pipeline that automatically tests, builds, trains, and deploys machine learning models to production using GitHub Actions.
 
 ---
 
-## 🎯 Pipeline Overview
+## Pipeline Overview
 
-Automatically on every push to `main`:
+The pipeline is split into **4 independent workflows** that run sequentially:
 
 ```
-1. Unit Tests       → Verify code works
-2. Build Image      → Create Docker container
-3. Train Model      → Register to MLflow
-4. E2E Tests        → Test complete system
-5. Push to Registry → Deploy to staging
+Workflow 1: Continuous Integration (CI)
+├─ Unit Tests       → Verify code correctness
+└─ Build Images     → Create Docker containers (training + serving)
+         ↓
+Workflow 2: Continuous Delivery (CD)
+├─ Train Model      → Run training, select best model
+├─ E2E Tests        → Validate serving + model integration
+└─ Promote          → Tag as "staging" (image + model)
+         ↓
+Workflow 3: Continuous Staging
+├─ Stage Tests      → Validate staging environment
+└─ Promote          → Tag as "production" (image + model)
+         ↓
+Workflow 4: Continuous Deployment
+└─ Deploy Prod      → Run production container
 ```
 
-**Time**: ~10 minutes | **File**: `.github/workflows/ci-cd.yml`
-
-**Key Principle**: Each job depends on the previous one. If any fails, pipeline stops.
+**Location**: `.github/workflows/`
 
 ---
 
-## Job 1: Unit Tests
+## Why Separate Workflows?
 
-**Purpose**: Fast feedback on code correctness
+### The Design Choice
 
-### What Happens
+Instead of one monolithic workflow, we use **4 chained workflows**. Each triggers the next via `workflow_run` events.
 
-```yaml
-- name: Checkout code
-  uses: actions/checkout@v4
-```
-Downloads your code to GitHub runner
+### Benefits of This Separation
 
-```yaml
-- name: Set up Python
-  uses: actions/setup-python@v5
-  with:
-    python-version: '3.13'
-```
-Installs Python environment
+1. **Modularity**: Each workflow has a clear, single responsibility
+2. **Reusability**: Run workflows independently via `workflow_dispatch`
+3. **Failure isolation**: Easy to identify which stage failed
+4. **Testing**: Test staging/deployment separately without running CI
+5. **Visibility**: GitHub Actions UI shows 4 clear stages
 
-```yaml
-- name: Install dependencies
-  run: uv sync
-```
-Installs pytest, sklearn, mlflow, flask from `pyproject.toml`
+### Trade-offs
 
-```yaml
-- name: Run tests
-  run: |
-    uv run pytest tests/test_api.py -v
-    uv run pytest tests/test_train.py -v
-```
-Runs unit tests separately for API and training code
+**Pros**:
+- Clean separation of concerns (CI ≠ CD ≠ Staging ≠ Deployment)
+- Can manually trigger any stage for debugging
+- Easier to add environment-specific configurations
 
-### Why This Matters
-- **Fast**: Runs in ~30 seconds
-- **Cheap**: No Docker building or model training
-- **Early feedback**: Catch bugs before expensive operations
+**Cons**:
+- More files to maintain
+- Slight overhead in workflow chaining (~10-20 seconds between stages)
+- Need to pass artifacts through container registry
 
-**If fails**: Pipeline stops immediately
+### Alternative Approaches
+
+**Option A: Single Monolithic Workflow**
+- All stages in one `.github/workflows/pipeline.yml`
+- Jobs depend on each other using `needs: [job-name]`
+- ✅ Simple, single file
+- ❌ Hard to run individual stages, less flexible
+
+**Option B: Environment-Based Separation**
+- One workflow per environment: `ci.yml`, `staging.yml`, `production.yml`
+- Triggered by branch or tag (e.g., `main` → staging, `v*` tags → production)
+- ✅ Clear environment boundaries
+- ❌ Doesn't separate CI concerns (test/build/train)
+
+**Option C: Event-Based Separation**
+- Split by trigger: `on-push.yml`, `on-pr.yml`, `on-release.yml`
+- ✅ Different behavior per event type
+- ❌ Duplicates pipeline logic
+
+**Why We Chose Our Approach**: Best balance for learning ML pipelines. Shows progression: code validation → model creation → staged testing → deployment.
 
 ---
 
-## Job 2: Build Docker Image
+## Setting Up GitHub Actions
 
-**Purpose**: Create container image and save for testing
+### Required Repository Settings
 
-### What Happens
+#### 1. Enable GitHub Actions
+- Go to **Settings** → **Actions** → **General**
+- Set **Workflow permissions** to "Read and write permissions"
+- Check ✅ "Allow GitHub Actions to create and approve pull requests"
+
+#### 2. Configure Environment Variables
+
+Go to **Settings** → **Secrets and variables** → **Actions** → **Variables** tab:
+
+| Variable Name | Example Value | Description |
+|--------------|---------------|-------------|
+| `REGISTRY` | `ghcr.io` | Container registry (GitHub Container Registry) |
+| `MLFLOW_TRACKING_URI` | `http://your-mlflow.com:8080` | MLflow tracking server URL |
+| `MLFLOW_EXPERIMENT_NAME` | `iris-classification` | Name of MLflow experiment |
+| `MLFLOW_MODEL_NAME` | `iris-model` | Registered model name in MLflow |
+
+#### 3. Configure Secrets
+
+Go to **Settings** → **Secrets and variables** → **Actions** → **Secrets** tab:
+
+| Secret Name | Value | Description |
+|------------|-------|-------------|
+| `MLFLOW_USERNAME` | Your MLflow username | Auth for MLflow tracking server |
+| `MLFLOW_PASSWORD` | Your MLflow password | Auth for MLflow tracking server |
+
+**Note**: `GITHUB_TOKEN` is automatically provided by GitHub Actions - no setup needed!
+
+#### 4. Enable GitHub Container Registry (GHCR)
+
+- Go to your **Profile** → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+- Ensure your repository has package write permissions (automatic with `GITHUB_TOKEN`)
+- Make packages public: **Package settings** → **Change visibility** → Public
+
+### Testing Your Setup
+
+After configuration, trigger manually:
+
+1. Go to **Actions** tab
+2. Select **"1 - Continuous Integration"**
+3. Click **"Run workflow"** → **"Run workflow"**
+4. Watch it execute! Should complete without errors.
+
+---
+
+## Workflow 1: Continuous Integration
+
+**File**: `.github/workflows/1_continuous_integration.yml`
+
+**Trigger**: Runs on every push or pull request to `main` branch
+
+**Purpose**: Validate code quality and build container images
+
+### Workflow Configuration
 
 ```yaml
-needs: test-unit  # Waits for Job 1
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
 ```
 
+- Runs on all changes to `main`
+- Also runs on PRs targeting `main` (validate before merge)
+- Can be manually triggered from GitHub UI
+
+### Job 1: `test-unit`
+
+**What it does**: Run fast unit tests to validate code correctness
+
 ```yaml
-- name: Build Flask image
-  uses: docker/build-push-action@v5
+- uses: actions/setup-python@v5
+  with: { python-version: '3.13' }
+- run: pip install uv
+- run: uv sync
+- run: uv run pytest tests/test_api.py -v
+- run: uv run pytest tests/test_train.py -v
+```
+
+**Steps**:
+1. Setup Python 3.13 environment
+2. Install `uv` (fast Python package manager)
+3. Install dependencies from `pyproject.toml`
+4. Run API unit tests (Flask endpoints, input validation)
+5. Run training unit tests (model creation, data processing)
+
+**Why separate test files?** Easier to identify if API or training logic broke.
+
+**If fails**: Pipeline stops. Fix tests before building images.
+
+---
+
+### Job 2: `build-images`
+
+**What it does**: Build Docker images for training and serving
+
+**Depends on**: `test-unit` (only runs if tests pass)
+
+```yaml
+needs: test-unit
+```
+
+#### Step 2a: Build Training Image
+
+```yaml
+- uses: docker/build-push-action@v5
   with:
     context: .
-    file: ./Dockerfile.flask
+    file: ./training/Dockerfile
     platforms: linux/amd64
     push: false
-    tags: flask-app:${{ github.sha }}
-    cache-from: type=gha
-    cache-to: type=gha,mode=max
-    outputs: type=docker,dest=/tmp/flask-app.tar
+    tags: training:${{ github.sha }}
+    outputs: type=docker,dest=/tmp/training.tar
 ```
 
-**Key Parameters**:
-- `push: false` - Don't push yet, test first
-- `tags: flask-app:${{ github.sha }}` - Unique tag per commit
-- `cache-from/to: type=gha` - Reuse layers (5 min → 30 sec)
-- `outputs: type=docker,dest=/tmp/flask-app.tar` - Save as file
+**Key details**:
+- `context: .` - Build from project root
+- `file: ./training/Dockerfile` - Use training-specific Dockerfile
+- `platforms: linux/amd64` - Build for Intel/AMD (GitHub runners)
+- `push: false` - Don't push yet, validate first
+- `tags: training:${{ github.sha }}` - Tag with commit hash (traceability)
+- `outputs: type=docker,dest=/tmp/training.tar` - Save to file
+
+#### Step 2b: Build Serving Image
 
 ```yaml
-- name: Upload artifact
-  uses: actions/upload-artifact@v4
+- uses: docker/build-push-action@v5
   with:
-    name: flask-app-image
-    path: /tmp/flask-app.tar
-    retention-days: 1
-```
-Shares image with next jobs (deleted after 1 day)
-
-### Why This Matters
-- **Efficient**: Caching makes rebuilds fast
-- **Safe**: Build once, test before pushing
-- **Traceable**: Git SHA in tag enables rollback
-
-**If fails**: Build error (missing dependencies, Dockerfile syntax)
-
----
-
-## Job 3: Train Model
-
-**Purpose**: Validate training code and register model
-
-### What Happens
-
-```yaml
-needs: build-images  # Waits for Job 2
+    context: .
+    file: ./serving/Dockerfile.flask
+    platforms: linux/amd64
+    push: false
+    tags: serving:${{ github.sha }}
+    outputs: type=docker,dest=/tmp/serving.tar
 ```
 
-```yaml
-- name: Train model
-  env:
-    MLFLOW_TRACKING_URI: http://dsn2026hotcrp.dei.uc.pt:8080
-    MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
-    MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
-  run: uv run python tests/train_ci.py
-```
+Same approach, different Dockerfile. Serving image contains Flask app + model loading logic.
 
-**What the script does**:
-1. Trains 3 models with different hyperparameters (C=0.1, 1.0, 10.0)
-2. Logs metrics to remote MLflow server
-3. Registers best model
-4. Transitions to "Staging" stage
-
-**Secrets**: Stored in GitHub → Settings → Secrets → Actions (never shown in logs)
+#### Step 2c: Push to Registry
 
 ```yaml
-- name: Save metadata
-  run: echo "Training completed at $(date)" > training_metadata.txt
-
-- name: Upload artifact
-  uses: actions/upload-artifact@v4
+- uses: docker/login-action@v3
   with:
-    name: training-metadata
-    retention-days: 7
-```
-Saves training info for 7 days
-
-### Why This Matters
-- **Validates**: Training code always works
-- **Documents**: Model versions tracked in MLflow
-- **Tests integration**: Verifies MLflow connection
-
-**Trade-off**: Adds 3+ minutes to pipeline
-
-**If fails**: Training broken, MLflow connection issue, or auth problem
-
----
-
-## Job 4: End-to-End Tests
-
-**Purpose**: Final quality gate - test everything together
-
-### What Happens
-
-```yaml
-needs: train-model  # Waits for Job 3
-```
-
-```yaml
-- name: Download image
-  uses: actions/download-artifact@v4
-  with:
-    name: flask-app-image
-```
-Gets Docker image from Job 2
-
-```yaml
-- name: Load image
-  run: docker load --input /tmp/flask-app.tar
-```
-Makes image available to Docker
-
-```yaml
-- name: Start Flask app
-  run: |
-    docker run -d \
-      --name flask-e2e \
-      -p 8080:8080 \
-      -e MLFLOW_TRACKING_URI=${{ env.MLFLOW_TRACKING_URI }} \
-      -e MLFLOW_TRACKING_USERNAME=${{ secrets.MLFLOW_USERNAME }} \
-      -e MLFLOW_TRACKING_PASSWORD=${{ secrets.MLFLOW_PASSWORD }} \
-      flask-app:${{ github.sha }}
-    
-    sleep 10
-```
-Starts container and waits for app to be ready
-
-```yaml
-- name: Run E2E tests
-  run: uv run pytest tests/test_e2e.py -v
-```
-Tests health endpoint, predictions, and error handling
-
-```yaml
-- name: Cleanup
-  if: always()
-  run: docker stop flask-e2e && docker rm flask-e2e
-```
-Always cleanup containers (even on failure)
-
-### Why This Matters
-- **Comprehensive**: Tests Docker + Flask + MLflow + Model integration
-- **Realistic**: Same environment as production
-- **Safety gate**: Last check before deployment
-
-**If fails**: Container won't start, model not loading, or API broken
-
----
-
-## Job 5: Push to Registry
-
-**Purpose**: Deploy tested image to production registry
-
-### What Happens
-
-```yaml
-needs: test-e2e
-if: github.ref == 'refs/heads/main'
-```
-Only runs if E2E passed AND on main branch
-
-```yaml
-- name: Login to registry
-  uses: docker/login-action@v3
-  with:
-    registry: ghcr.io
+    registry: ${{ env.REGISTRY }}
     username: ${{ github.actor }}
     password: ${{ secrets.GITHUB_TOKEN }}
+
+- run: |
+    docker tag training:${{ github.sha }} ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+    docker push ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+
+- run: |
+    docker tag serving:${{ github.sha }} ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
+    docker push ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
 ```
-Authenticates with GitHub Container Registry (GITHUB_TOKEN is automatic)
+
+**Why push now?**
+- Makes images available to next workflow
+- GitHub Container Registry (GHCR) acts as artifact storage
+- Alternative: Use `actions/upload-artifact` (but limited to 10GB, slower for large images)
+
+**Environment variables used**:
+- `REGISTRY`: `ghcr.io`
+- `github.repository`: `your-username/your-repo-name`
+- `github.sha`: Git commit hash
+
+**If fails**: Check Dockerfile syntax, missing files, or registry permissions
+
+---
+
+## Workflow 2: Continuous Delivery
+
+**File**: `.github/workflows/2_continuous_delivery.yml`
+
+**Trigger**: Automatically runs when Workflow 1 completes successfully
+
+**Purpose**: Train model, validate with E2E tests, promote to staging
+
+### Workflow Configuration
 
 ```yaml
-- name: Extract metadata
-  id: meta
-  uses: docker/metadata-action@v5
-  with:
-    images: ghcr.io/${{ github.repository }}/flask-app
-    tags: |
-      type=ref,event=branch
-      type=sha,prefix={{branch}}-
-      type=raw,value=staging,enable={{is_default_branch}}
+on:
+  workflow_run:
+    workflows: ["1 - Continuous Integration"]
+    types: [completed]
+  workflow_dispatch:
 ```
 
-**Creates 3 tags**:
-- `main` - branch name
-- `main-abc123def` - branch + commit SHA (for rollback)
-- `staging` - always points to latest (main branch only)
+- `workflow_run`: Chained trigger (waits for CI to finish)
+- Only proceeds if CI succeeded: `if: ${{ github.event.workflow_run.conclusion == 'success' }}`
+
+### Job 1: `train-model`
+
+**What it does**: Run training pipeline, select best model, run E2E tests, promote to staging
+
+#### Step 1a: Run Training
 
 ```yaml
-- name: Build and push
-  uses: docker/build-push-action@v5
-  with:
-    platforms: linux/amd64,linux/arm64
-    push: true
-    tags: ${{ steps.meta.outputs.tags }}
-    cache-from: type=gha
+- run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
+
+- run: |
+    docker run --rm \
+      -e MLFLOW_TRACKING_URI \
+      -e MLFLOW_TRACKING_USERNAME \
+      -e MLFLOW_TRACKING_PASSWORD \
+      -e MLFLOW_MODEL_NAME \
+      -e MLFLOW_EXPERIMENT_NAME \
+      -e COMMIT_SHA \
+      ${{ env.REGISTRY }}/${{ github.repository }}/training:${{ github.sha }}
 ```
 
-**Key differences from Job 2**:
-- `platforms: linux/amd64,linux/arm64` - Both Intel and ARM (Apple Silicon)
-- `push: true` - Actually push this time!
+**What happens inside the container**:
+1. Loads Iris dataset
+2. Trains multiple models with different hyperparameters (C=0.1, 1.0, 10.0)
+3. Logs metrics (accuracy, precision, recall) to MLflow
+4. Selects best model based on accuracy
+5. Registers model in MLflow Model Registry
+6. Sets alias: `<commit-sha>` pointing to best model
+
+**Environment variables passed**:
+- `MLFLOW_TRACKING_URI`: Where MLflow server is hosted
+- `MLFLOW_TRACKING_USERNAME/PASSWORD`: Authentication
+- `MLFLOW_MODEL_NAME`: Name to register model under
+- `MLFLOW_EXPERIMENT_NAME`: Experiment to log runs to
+- `COMMIT_SHA`: Used to tag model version
+
+#### Step 1b: Test Serving with New Model
+
+```yaml
+- run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
+
+- run: |
+    docker run -d \
+      --name serving-app \
+      -p 8080:8080 \
+      -e MLFLOW_TRACKING_URI \
+      -e MLFLOW_TRACKING_USERNAME \
+      -e MLFLOW_TRACKING_PASSWORD \
+      -e MODEL_ALIAS=${{ github.sha }} \
+      -e MLFLOW_MODEL_NAME \
+      ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }}
+    sleep 10
+
+- run: uv run pytest tests/test_e2e.py -v
+```
+
+**E2E Test Coverage** (`tests/test_e2e.py`):
+1. Health check: `GET /health` returns 200
+2. Prediction endpoint: `POST /predict` with valid data
+3. Error handling: Invalid input returns proper error
+4. Model loading: Verifies model loaded from MLflow
+
+**Why test here?** Validate that:
+- Serving image correctly loads model from MLflow
+- Model inference works end-to-end
+- API endpoints respond correctly
+
+#### Step 1c: Promote to Staging
+
+```yaml
+- run: |
+    docker tag ${{ env.REGISTRY }}/${{ github.repository }}/serving:${{ github.sha }} \
+               ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+    docker push ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+
+- run: uv run python model-promotion/promote_model.py
+  env:
+    FROM_ALIAS: ${{ github.sha }}
+    TO_ALIAS: staging
+```
+
+**What happens**:
+1. Tag Docker image with `staging` label
+2. Push to registry (makes `serving:staging` available)
+3. Run promotion script:
+   - Finds model with alias `<commit-sha>`
+   - Adds alias `staging` to same model version
+   - Now model has two aliases: `<commit-sha>` and `staging`
+
+**Why aliases?** MLflow aliases let you point to specific model versions without hardcoding version numbers.
+
+**If fails**: Check MLflow connectivity, model not found, or E2E tests failed
+
+---
+
+## Workflow 3: Continuous Staging
+
+**File**: `.github/workflows/3_continuous_staging.yml`
+
+**Trigger**: Automatically runs when Workflow 2 completes successfully
+
+**Purpose**: Validate staging environment, promote to production
+
+### Workflow Configuration
+
+```yaml
+on:
+  workflow_run:
+    workflows: ["2 - Continuous Delivery"]
+    types: [completed]
+```
+
+### Job 1: `stage-tests`
+
+**What it does**: Test staging artifacts, promote to production if tests pass
+
+#### Step 1a: Test Staging Image
+
+```yaml
+- run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+
+- run: |
+    docker run -d \
+      --name serving-app \
+      -p 8080:8080 \
+      -e MODEL_ALIAS=${{ github.sha }} \
+      ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging
+    sleep 10
+
+- run: uv run pytest tests/test_e2e.py -v
+```
+
+**Key difference from CD workflow**: Uses `serving:staging` image instead of `serving:<commit-sha>`
+
+**Why test again?** Validates:
+- The `staging` tag points to correct image
+- No issues in tagging/promotion process
+- Same tests in staging environment
+
+**IMPORTANT: In production systems, this stage would**:
+- Deploy to staging environment (separate infrastructure)
+- Run extended test suite (performance, load, security tests)
+- A/B testing with shadow traffic
+- Manual QA validation
+- Wait for approval before production
+
+#### Step 1b: Promote to Production
+
+```yaml
+- run: uv run python model-promotion/promote_model.py
+  env:
+    FROM_ALIAS: staging
+    TO_ALIAS: production
+
+- run: |
+    docker tag ${{ env.REGISTRY }}/${{ github.repository }}/serving:staging \
+               ${{ env.REGISTRY }}/${{ github.repository }}/serving:production
+    docker push ${{ env.REGISTRY }}/${{ github.repository }}/serving:production
+```
+
+**What happens**:
+1. Promote model: Add `production` alias to model (keeps `staging` alias too)
+2. Tag Docker image with `production`
+3. Push to registry
+
+**Result**: Both model and container are now production-ready
+
+**If fails**: Staging tests failed, review logs before promoting
+
+---
+
+## Workflow 4: Continuous Deployment
+
+**File**: `.github/workflows/4_continuous_deployment.yml`
+
+**Trigger**: Automatically runs when Workflow 3 completes successfully
+
+**Purpose**: Deploy production container
+
+### Workflow Configuration
+
+```yaml
+on:
+  workflow_run:
+    workflows: ["3 - Continuous Staging"]
+    types: [completed]
+```
+
+### Job 1: `deploy-prod`
+
+**What it does**: Pull production image and run it
+
+```yaml
+- uses: docker/login-action@v3
+- run: docker pull ${{ env.REGISTRY }}/${{ github.repository }}/serving:production
+- run: docker stop serving-app || true
+- run: docker rm serving-app || true
+
+- run: |
+    docker run -d --name serving-app -p 9000:8080 \
+      -e MLFLOW_TRACKING_URI \
+      -e MLFLOW_TRACKING_USERNAME \
+      -e MLFLOW_TRACKING_PASSWORD \
+      -e MODEL_ALIAS=${{ github.sha }} \
+      -e MLFLOW_MODEL_NAME \
+      ${{ env.REGISTRY }}/${{ github.repository }}/serving:production
+```
+
+**Key details**:
+- Port mapping: `9000:8080` (expose on port 9000 to avoid conflicts)
+- Stop/remove old container before starting new one
+- Uses `production` tagged image
+
+**Limitations of this approach** (simplified for learning):
+- Deploys to same GitHub runner (not a real server)
+- Brief downtime during container swap
+- No health checks before switching traffic
+
+**Real-world deployment patterns**:
+
+1. **SSH to remote server**:
+```yaml
+- uses: appleboy/ssh-action@master
+  with:
+    host: ${{ secrets.PROD_HOST }}
+    username: ${{ secrets.PROD_USER }}
+    key: ${{ secrets.SSH_KEY }}
+    script: |
+      docker pull registry/image:production
+      docker-compose up -d
+```
+
+**If fails**: Check deployment target availability, credentials, or resource limits
+
+---
+
+## Key Concepts
+
+### 1. Workflow Chaining
+
+```yaml
+on:
+  workflow_run:
+    workflows: ["1 - Continuous Integration"]
+    types: [completed]
+
+jobs:
+  train-model:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+```
+
+**How it works**:
+- Workflow 2 waits for Workflow 1 to complete
+- Only runs if previous workflow succeeded
+- Creates sequential pipeline: CI → CD → Staging → Deployment
+
+**Benefits**: Each workflow is independent, can be triggered manually
+
+### 2. Artifact Passing via Registry
+
+Instead of GitHub Actions artifacts, we use the container registry:
+
+```
+Workflow 1: Build → Push to ghcr.io/repo/image:abc123
+Workflow 2: Pull from ghcr.io/repo/image:abc123 → Test
+```
+
+**Why?**
+- No 10GB artifact size limit
+- Images available outside GitHub Actions
+- Natural for container-based deployments
+
+### 3. Image Tagging Strategy
+
+```
+serving:abc123def       → Specific commit (immutable)
+serving:staging         → Latest validated in CD (moves)
+serving:production      → Latest deployed (moves)
+```
+
+**Traceability**: Can always rollback to specific commit SHA
+
+### 4. MLflow Aliases
+
+Similar to image tags, but for models:
+
+```
+Model Version 5:
+  - alias: abc123def (commit)
+  - alias: staging
+  - alias: production
+```
+
+**Benefits**:
+- Serving app loads `model:production` (no version numbers)
+- Promotion = adding alias (no model copying)
+- Version history preserved
+
+### 5. Environment Variables vs Secrets
+
+**Variables** (public, in Variables tab):
+- `REGISTRY`: ghcr.io
+- `MLFLOW_TRACKING_URI`: http://mlflow.example.com
+- `MLFLOW_MODEL_NAME`: iris-model
+
+**Secrets** (encrypted, in Secrets tab):
+- `MLFLOW_USERNAME`: admin
+- `MLFLOW_PASSWORD`: •••••••
+
+**Rule**: If it's sensitive (passwords, keys), use secrets!
+
+### 6. Manual Triggers
+
+All workflows have `workflow_dispatch`:
+
+```yaml
+on:
+  workflow_run: ...
+  workflow_dispatch:  # Enables manual triggering
+```
+
+**Use cases**:
+- Test deployment without running full pipeline
+- Rollback by re-running old workflow
+- Debug specific stage
+
+---
+
+## Exercise 1: Deploy and Explore the Pipeline
+
+### Objective
+
+Get hands-on experience with the complete ML pipeline by deploying it in your own repository and exploring all the components.
+
+### Part 1: Setup and First Deployment
+
+#### Step 1: Fork and Configure Repository
+
+1. **Fork this repository** to your GitHub account
+2. **Clone your fork** locally:
+   ```bash
+   git clone https://github.com/YOUR-USERNAME/laia-tutorial.git
+   cd laia-tutorial
+   ```
+
+3. **Configure GitHub Actions** (follow [Setting Up GitHub Actions](#setting-up-github-actions)):
+   - Enable GitHub Actions with read/write permissions
+   - Add repository variables: `REGISTRY`, `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `MLFLOW_MODEL_NAME`
+   - Add secrets: `MLFLOW_USERNAME`, `MLFLOW_PASSWORD`
+
+#### Step 2: Trigger Your First Pipeline Run
+
+1. Go to your repository's **Actions** tab
+2. Select **"1 - Continuous Integration"**
+3. Click **"Run workflow"** → **"Run workflow"**
+4. Watch the pipeline execute through all 4 workflows
+
+**What to observe**:
+- ✅ Unit tests passing
+- ✅ Docker images being built
+- ✅ Training completing with 3 models
+- ✅ E2E tests validating the serving API
+- ✅ Promotion through staging to production
+
+### Part 2: Explore Docker Images in GitHub Container Registry
+
+#### Step 3: View Your Container Images
+
+1. Go to your GitHub profile
+2. Click on **"Packages"** tab
+3. You should see two packages:
+   - `laia-tutorial/training`
+   - `laia-tutorial/serving`
+
+**Questions to answer**:
+- How many tags does each image have? (Hint: commit SHA, staging, production)
+- What is the size of each image?
+- Which image is larger and why?
+
+#### Step 4: Inspect Image Tags
+
+Click on the `serving` package and examine the tags:
+
+```
+serving:abc123def456...  (commit SHA - immutable)
+serving:staging          (latest validated)
+serving:production       (currently deployed)
+```
+
+**Exercise**: Find which commit SHA is currently tagged as `production`. Does it match the latest commit?
+
+### Part 3: Analyze Models in MLflow
+
+#### Step 5: Explore MLflow UI
+
+1. Open your MLflow server: `MLFLOW_TRACKING_URI`
+2. Navigate to **Experiments** → Select your experiment
+
+**What to explore**:
+- How many runs were created by your pipeline?
+- Compare metrics across the 3 runs (C=0.1, C=1.0, C=10.0)
+- Which hyperparameter value performed best?
+
+#### Step 6: Examine Model Registry
+
+1. In MLflow, go to **Models** tab
+2. Click on your model (e.g., `iris-model`)
+3. View the **Versions** and **Aliases**
+
+**Questions to answer**:
+- Which version is currently in production?
+- What aliases are assigned to the latest version?
+- What was the accuracy of the production model?
+
+#### Step 7: Analyze Model Artifacts
+
+1. Click on a model version
+2. Navigate to the source run
+3. Explore the **Artifacts** section
+
+**What to find**:
+- Trained model file (`model.pkl` or similar)
+- Model visualization (`results_C*.png`)
+- Confusion matrix or other metrics visualizations
+
+### Part 4: Make a Change and Redeploy
+
+#### Step 8: Modify Training Parameters
+
+1. Open `training/train_model.py`
+2. Modify the hyperparameter grid to test different values:
+   ```python
+   # Change from:
+   C_values = [0.1, 1.0, 10.0]
+   
+   # To:
+   C_values = [0.5, 5.0, 50.0]
+   ```
+
+3. Commit and push:
+   ```bash
+   git add training/train_model.py
+   git commit -m "Test new hyperparameters"
+   git push origin main
+   ```
+
+#### Step 9: Monitor the Automatic Deployment
+
+1. Watch the **Actions** tab. The pipeline should trigger automatically
+2. Observe the new models being trained
+3. Check MLflow - you should see 3 new runs with your new C values
+
+#### Step 10: Verify the Updated Model is Live
+
+After the pipeline completes:
+
+1. Check MLflow Model Registry - verify the new version has the `production` alias
+2. Check GHCR - verify the `production` tag points to your latest commit
+
+### Reflection Questions
+
+1. **Traceability**: How can you identify which code version produced which model?
+2. **Rollback**: If the new model is worse, how would you rollback to the previous version?
+3. **Automation vs Control**: The pipeline automatically deploys to production. Is this safe? What's missing?
+
+---
+
+## Exercise 2: Implement Model Quality Gates
+
+### The Problem
+
+Currently, **every trained model automatically gets promoted to staging** - even if it performs poorly! In production ML systems, this is dangerous. You need quality gates that validate model performance before allowing promotion.
+
+### Your Task
+
+Implement a model quality validation step that:
+
+1. **Runs after training** but **before E2E tests**
+2. **Retrieves the trained model's metrics** from MLflow (accuracy, precision, recall)
+3. **Checks quality thresholds**:
+   - Minimum accuracy: 0.90
+   - Minimum precision: 0.85
+4. **Stops the pipeline** if quality checks fail (exit code 1)
+5. **Allows promotion** if quality checks pass (exit code 0)
+
+### Where to Implement
+
+**Location**: Between Step 1a (Run Training) and Step 1b (Test Serving) in Workflow 2
+
+**Files you'll need to create/modify**:
+- `model-validation/validate_quality.py` - Python script to check model quality
+- `.github/workflows/2_continuous_delivery.yml` - Add validation step
+
+### Hints
+
+<details>
+<summary>💡 How to retrieve model metrics from MLflow</summary>
+
+```python
+import mlflow
+
+# Connect to MLflow
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+
+# Get the model version by alias
+client = mlflow.MlflowClient()
+model_versions = client.get_model_version_by_alias(
+    name=os.getenv("MLFLOW_MODEL_NAME"),
+    alias=os.getenv("MODEL_ALIAS")  # Will be the commit SHA
+)
+
+# Get the run that created this model version
+run_id = model_versions.run_id
+run = client.get_run(run_id)
+
+# Access metrics
+accuracy = run.data.metrics.get("accuracy")
+```
+</details>
+
+<details>
+<summary>💡 How to fail the pipeline</summary>
+
+In Python:
+```python
+import sys
+sys.exit(1)  # Non-zero exit code fails the workflow
+```
+
+In your workflow YAML:
+```yaml
+- name: Validate Model Quality
+  run: uv run python model-validation/validate_quality.py
+  # If the script exits with code 1, the workflow stops here
+```
+</details>
+
+<details>
+<summary>💡 Expected behavior</summary>
+
+**When model is good** (accuracy ≥ 0.90, precision ≥ 0.85):
+```
+✅ Model passed quality gate
+   - Accuracy: 0.95 (threshold: 0.90)
+   - Precision: 0.93 (threshold: 0.85)
+```
+→ Pipeline continues to E2E tests and promotion
+
+**When model is poor**:
+```
+❌ Model FAILED quality gate
+   - Accuracy: 0.85 (threshold: 0.90) ❌
+   - Precision: 0.88 (threshold: 0.85) ✅
+Pipeline stopped. Model will NOT be promoted.
+```
+→ Pipeline stops, no promotion to staging
+</details>
+
+### Testing Your Solution
+
+1. **Test with good model**: Run the pipeline normally - should pass
+2. **Test with bad model**: Modify thresholds temporarily to force failure
+   ```python
+   MIN_ACCURACY = 0.99  # Iris model won't reach this
+   ```
+3. **Verify pipeline stops**: Check that E2E tests never run when validation fails
 
 ### Why This Matters
-- **Multi-platform**: Works on servers (AMD64) and Mac M1/M2 (ARM64)
-- **Versioned**: Every deployment traceable via git SHA
-- **Safe**: Only deploys if all tests passed
 
-**If fails**: Auth failed, network issue, or storage quota exceeded
+In production ML systems:
+- **Prevents bad models** from reaching users
+- **Enforces quality standards** across team
+- **Catches training bugs** (data issues, code bugs)
+- **Enables safe automation** - pipeline can run without human approval
 
----
-
-## 🎯 Key Concepts
-
-### 1. Job Dependencies
-```yaml
-job3:
-  needs: job2  # job3 waits for job2 to succeed
-```
-Pipeline stops at first failure - don't waste resources
-
-### 2. Artifacts
-Share files between jobs:
-- Docker image: Job 2 → Job 4
-- Training metadata: Job 3 → Job 5
-
-Alternative would be rebuilding in each job (wasteful)
-
-### 3. Caching
-```yaml
-cache-from: type=gha
-cache-to: type=gha,mode=max
-```
-Reuses Docker layers: **5 min build → 30 sec build**
-
-### 4. Secrets
-```yaml
-${{ secrets.MLFLOW_PASSWORD }}
-```
-Stored securely, never shown in logs. Set in repo Settings → Secrets → Actions
-
-### 5. Conditional Execution
-```yaml
-if: github.ref == 'refs/heads/main'
-```
-Different behavior for PRs vs main branch
+This is a critical component of **MLOps best practices**!
 
 ---
 
-## 💬 Discussion Topics
-
-### Should training be in CI/CD?
-
-**For**:
-- Ensures training code works
-- Generates model for E2E tests
-- Validates MLflow integration
-
-**Against**:
-- Slow (adds 3+ minutes)
-- Expensive compute
-- Not needed for every commit
-
-**Real-world**: Small projects train in CI/CD. Large models use separate training pipelines.
-
-### How to speed up the pipeline?
-
-Current: ~10 minutes
-
-**Optimizations**:
-1. Parallel jobs (where no dependencies)
-2. Smaller base images (`python:3.13-slim`)
-3. Skip training on non-training changes (path filters)
-4. Better caching (pip dependencies, test data)
-5. Self-hosted runners (faster hardware)
-
-### When to deploy automatically?
-
-**Auto deploy**:
-- ✅ Web apps with rollback
-- ✅ Internal tools
-- ✅ Good test coverage
-
-**Manual approval**:
-- ⚠️ Financial/healthcare systems
-- ⚠️ Compliance requirements
-- ⚠️ High downtime cost
-
-**Hybrid**: Auto to staging, manual to production
-
----
-
-## 🐛 Common Issues
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| "Artifact not found" | Job 2 failed or artifact expired | Check Job 2 succeeded, verify names match |
-| E2E tests timeout | Flask not starting | Increase sleep, check MLflow credentials |
-| "403 Forbidden" on push | No registry permissions | Enable "Read and write" in Actions settings |
-| Cache not working | Branch changed or expired | Cache is per-branch, 7-day expiry |
-| Secrets empty | Not configured | Add in Settings → Secrets → Actions (case-sensitive) |
-
----
-
-## 🚀 What's Missing?
-
-This pipeline is production-ready but could add:
-
-1. **Security scanning** - `trivy-action` for vulnerabilities
-2. **Linting** - `ruff` or `black` for code quality
-3. **Performance tests** - Check prediction latency
-4. **Notifications** - Slack/email on failure
-5. **Rollback** - Auto-rollback on health check failure
-6. **Production deploy** - Manual approval gate
-
-**Advanced patterns**:
-- Blue-green deployment (zero downtime)
-- Canary deployment (gradual rollout)
-- Feature flags (toggle without deploy)
-- Model monitoring (data drift alerts)
-
----
-
-## 📊 Complete Flow
+## Complete Pipeline Flow
 
 ```
-Developer pushes to main
-         ↓
-GitHub Actions triggered
-         ↓
-Job 1: Unit tests (30s)
-         ↓
-Job 2: Build image (2min)
-         ↓
-Job 3: Train model (3min)
-         ↓
-Job 4: E2E tests (1min)
-         ↓
-Job 5: Push to registry (3min)
-         ↓
-✅ Image available at:
-   ghcr.io/<user>/laia-tutorial/flask-app:staging
+Push to main
+     ↓
+┌──────────────────────────────────────────────┐
+│ Workflow 1: Continuous Integration           │
+│ ├─ test-unit (30-45s)                        │
+│ └─ build-images (2-4 min)                    │
+│    ├─ Build training image                   │
+│    ├─ Build serving image                    │
+│    └─ Push to ghcr.io                        │
+└──────────────────────────────────────────────┘
+     ↓ (on success)
+┌──────────────────────────────────────────────┐
+│ Workflow 2: Continuous Delivery              │
+│ └─ train-model (3-4 min)                     │
+│    ├─ Run training (trains 3 models)         │
+│    ├─ Register best model → MLflow           │
+│    ├─ E2E tests with new model               │
+│    └─ Promote to staging (image + model)     │
+└──────────────────────────────────────────────┘
+     ↓ (on success)
+┌──────────────────────────────────────────────┐
+│ Workflow 3: Continuous Staging               │
+│ └─ stage-tests (1-2 min)                     │
+│    ├─ Pull serving:staging image             │
+│    ├─ Run staging validation tests           │
+│    └─ Promote to production (image + model)  │
+└──────────────────────────────────────────────┘
+     ↓ (on success)
+┌──────────────────────────────────────────────┐
+│ Workflow 4: Continuous Deployment            │
+│ └─ deploy-prod (30s)                         │
+│    ├─ Pull serving:production image          │
+│    └─ Deploy to production                   │
+└──────────────────────────────────────────────┘
+     ↓
+✅ Production Deployed!
 ```
-
-**Total**: ~10 minutes from push to production-ready deployment
-
-**Artifacts created**:
-- Docker image (AMD64 + ARM64) in GitHub Container Registry
-- 3 experiment runs in MLflow with metrics
-- Registered model in "Staging" stage
-- Training metadata and logs
-
----
-
-**Questions? Discuss with your instructor!**
