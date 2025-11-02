@@ -8,7 +8,6 @@ os.environ["MLFLOW_ALLOWED_HOSTS"] = "*"
 
 # Configure MLflow tracking URI and authentication
 mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5050"))
-
 app = Flask(__name__)
 
 MODEL_NAME = os.getenv('MLFLOW_MODEL_NAME')
