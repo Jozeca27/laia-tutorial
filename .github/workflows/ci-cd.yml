@@ -176,19 +176,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+
+      - name: Download CI built image
+        uses: actions/download-artifact@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Extract metadata for Flask image
-        id: meta-flask
+          name: flask-ci-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/flask-ci.tar
+
+      - name: Extract metadata (same rules as build)
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.FLASK_IMAGE_NAME }}
@@ -196,19 +195,37 @@ jobs:
             type=ref,event=branch
             type=sha,prefix={{branch}}-
             type=raw,value=staging,enable={{is_default_branch}}
-      
-      - name: Build and push Flask image
-        uses: docker/build-push-action@v5
+
+      # Commit a new image layer to apply OCI labels
+      - name: Apply labels to loaded image
+        run: |
+          IMAGE_ID=$(docker images --format "{{.ID}}" --filter reference='flask-ci:*' | head -n 1)
+          LABEL_ARGS=""
+          for LABEL in ${{ steps.meta.outputs.labels }}; do
+            LABEL_ARGS="$LABEL_ARGS --label $LABEL"
+          done
+          docker commit $LABEL_ARGS "$IMAGE_ID" promoted-image:latest
+
+      # Tag promoted image with all metadata-action tags
+      - name: Tag promoted image
+        run: |
+          for TAG in ${{ steps.meta.outputs.tags }}; do
+            docker tag promoted-image:latest "$TAG"
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          context: .
-          file: ./Dockerfile.flask
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-flask.outputs.tags }}
-          labels: ${{ steps.meta-flask.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tags
+        run: |
+          for TAG in ${{ steps.meta.outputs.tags }}; do
+            docker push "$TAG"
+          done
+
       - name: Download training metadata
         uses: actions/download-artifact@v4
         with:

@@ -10,13 +10,12 @@ import matplotlib.pyplot as plt
 os.environ["MLFLOW_TRACKING_USERNAME"] = os.getenv("MLFLOW_TRACKING_USERNAME", "user1")
 os.environ["MLFLOW_TRACKING_PASSWORD"] = os.getenv("MLFLOW_TRACKING_PASSWORD", "UserPass123!")
 
-
 # Configure MLflow to use remote server with artifact uploads
 mlflow.set_tracking_uri("http://dsn2026hotcrp.dei.uc.pt:8080")
 
 # The MLflow server is configured with --serve-artifacts, so artifacts should be
 # uploaded via HTTP. We use mlflow-artifacts:/ URI for this.
-experiment_name = "user-braz-iris_classification"
+experiment_name = "user-jrc-iris_classification"
 artifact_uri = "mlflow-artifacts:/"
 
 # Check if experiment exists and has correct artifact location
@@ -86,5 +85,5 @@ for C in [0.1, 1.0, 10.0]:
 # Register the best model
 print(f"\nBest model: C={best_C}, accuracy={best_acc:.4f}")
 model_uri = f"runs:/{best_run_id}/model"
-registered_model = mlflow.register_model(model_uri, "iris-braz")
+registered_model = mlflow.register_model(model_uri, "iris-jrc")
 print(f"Registered model version: {registered_model.version}")
