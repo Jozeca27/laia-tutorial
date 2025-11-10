@@ -48,23 +48,22 @@ jobs:
 
       # Run training container which runs the training script within
       # The training script will select the "best" model and tag it with the sha of the commit in mlflow
-      - name: Run training
-        env:
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-          MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_USERNAME }}
-          MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_PASSWORD }}
-          MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
-          MLFLOW_MODEL_NAME: ${{ env.MLFLOW_MODEL_NAME }}
-          COMMIT_SHA: ${{ github.sha }}
-        run: |
-          docker run --rm \
-            -e MLFLOW_TRACKING_URI \
-            -e MLFLOW_TRACKING_USERNAME \
-            -e MLFLOW_TRACKING_PASSWORD \
-            -e MLFLOW_MODEL_NAME \
-            -e MLFLOW_EXPERIMENT_NAME \
-            -e COMMIT_SHA \
-            ${{ env.REGISTRY }}/${{ env.REPO_LC}}/training:${{ github.sha }}
+      - name: Run training on remote VM
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          script: |
+            docker pull ${{ env.REGISTRY }}/${{ env.REPO_LC}}/training:${{ github.sha }}
+            docker run --rm \
+              -e MLFLOW_TRACKING_URI="${{ env.MLFLOW_TRACKING_URI }}" \
+              -e MLFLOW_TRACKING_USERNAME="${{ secrets.MLFLOW_USERNAME }}" \
+              -e MLFLOW_TRACKING_PASSWORD="${{ secrets.MLFLOW_PASSWORD }}" \
+              -e MLFLOW_MODEL_NAME="${{ env.MLFLOW_MODEL_NAME }}" \
+              -e MLFLOW_EXPERIMENT_NAME="${{ env.MLFLOW_EXPERIMENT_NAME }}" \
+              -e COMMIT_SHA="${{ github.sha }}" \
+              ${{ env.REGISTRY }}/${{ env.REPO_LC}}/training:${{ github.sha }}
 
       # Download serving image built in the previous stage
       - run: docker pull ${{ env.REGISTRY }}/${{ env.REPO_LC}}/serving:${{ github.sha }}
